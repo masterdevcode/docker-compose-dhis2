@@ -1,11 +1,12 @@
+
 version: '3'
 services:
   core:
-    container_name: dhis2
+    container_name: dhis2-service
     image: "${DHIS2_CORE_IMAGE}"
     restart: always
     volumes:
-      - ${DHIS2_CORE_CONFIG:-./config/DHIS2_home/dhis.conf}:${DHIS2_HOME:-/opt/dhis2}/dhis.conf
+      - ${DHIS2_CORE_CONFIG:-./config/DHIS2_home/dhis.conf}:${DHIS2_HOME:-/DHIS2_home}/dhis.conf
       - ./config/DHIS2_home/log4j2.xml:${DHIS2_HOME:-/DHIS2_home}/log4j2.xml
       - ./config/server.xml:/usr/local/tomcat/conf/server.xml
       - home:${DHIS2_HOME:-/DHIS2_home}
@@ -15,8 +16,9 @@ services:
               -Dlog4j2.configurationFile=${DHIS2_HOME:-/DHIS2_home}/log4j2.xml"
     depends_on:
       - "db"
+      - "redis"   
   db:
-    container_name: db_postgres
+    container_name: db_service
     image: postgis/postgis:12-3.3
     command: >
       postgres -c max_connections=200
@@ -33,11 +35,21 @@ services:
       -c track_activity_query_size=8192
     restart: always
     volumes:
-      - datadb:/var/lib/postgresql/data
+      - db_dhis:/var/lib/postgresql/data
     environment:
       POSTGRES_DB: dhis2
       POSTGRES_USER: dhis
       POSTGRES_PASSWORD: dhis
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7
+    container_name: redis
+    restart: always
+    volumes:
+      - redis:/data
+    ports:
+      - 6379:6379
   pgadmin:
     container_name: pgadmin4
     image: dpage/pgadmin4
@@ -46,28 +58,68 @@ services:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
-      - "81:80"
-  ngnix_proxy:
-    container_name: ngninx_proxy
-    image: nginx
-    restart: always
-    ports:
-      - "${DHIS2_CORE_PORT_HTTP}:80"
-      - "${DHIS2_CORE_PORT_HTTPS}:443"
+      - "84:80"
     volumes:
-      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./.apps:/data/apps:ro
-      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - pgadmin_data:/var/lib/pgadmin
+  ngnix_proxy:
+    container_name: nginx_proxy
+    image: jc21/nginx-proxy-manager:latest
+    restart: always
+    environment:
+      # These are the settings to access your db
+      DB_MYSQL_HOST: mysqldb
+      DB_MYSQL_PORT: 3306
+      DB_MYSQL_USER: "nginx"
+      DB_MYSQL_PASSWORD: "nginx"  # use secret instead
+      DB_MYSQL_NAME: "nginx-manager"
+    ports:
+      - "85:81"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - nginx_data:/data
+      - letsencrypt:/etc/letsencrypt
+    depends_on:
+      - "mysqldb"
+  phpmyadmin:
+    container_name: phpmyadmin
+    image: phpmyadmin/phpmyadmin:latest
+    ports:
+      - 86:80
+    environment:
+      PMA_ARBITRARY: 1
+      PMA_HOST: mysqldb
+    volumes:
+      - phpmyadmin_data:/etc/phpmyadmin/
+    depends_on:
+      - mysqldb
+  mysqldb:
+    container_name: mysql_db
+    image: jc21/mariadb-aria
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: "nginx"  # use secret instead
+      MYSQL_AUTH_PLUGIN: mysql_native_password
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: "nginx-manager"
+      MYSQL_USER: "nginx"
+      MYSQL_PASSWORD: "nginx"  # use secret instead
+    ports:
+      - 3306:3306
   portainer:
     container_name: portainer
     image: portainer/portainer-ce:latest
     ports:
       - 9443:9443
     volumes:
-        - portainer_data:/data
-        - /var/run/docker.sock:/var/run/docker.sock
-    restart: always
+       - portainer_data:/data
+       - /var/run/docker.sock:/var/run/docker.sock
 volumes:
-  portainer_data:    
-  datadb:
   home:
+  db_dhis:
+  redis:
+  pgadmin_data:
+  phpmyadmin_data:
+  portainer_data:
+  nginx_data:
+  letsencrypt:
